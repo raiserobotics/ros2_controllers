@@ -71,7 +71,8 @@ std::array<WheelCommand, 4> SwerveDriveKinematics::compute_wheel_commands(
 
 std::array<WheelCommand, 4> SwerveDriveKinematics::optimize_wheel_commands(
   const std::array<WheelCommand, 4> & wheel_commands,
-  const std::array<double, 4> & current_steering_angles)
+  const std::array<double, 4> & current_steering_angles,
+  double min_steering_position, double max_steering_position)
 {
   std::array<WheelCommand, 4> optimized_commands = wheel_commands;
 
@@ -80,14 +81,34 @@ std::array<WheelCommand, 4> SwerveDriveKinematics::optimize_wheel_commands(
     double target_angle = wheel_commands[i].steering_angle;
     double current_angle = current_steering_angles[i];
 
-    double angle_diff = angles::shortest_angular_distance(current_angle, target_angle);
+    double flipped_angle = angles::normalize_angle(target_angle + M_PI);
 
-    if (std::abs(angle_diff) > M_PI_2)
+    // Use physical travel distance (not circular shortest-path) because steering joints
+    // are bounded — they cannot wrap around through ±pi like a continuous joint.
+    double travel_direct = std::abs(target_angle - current_angle);
+    double travel_flipped = std::abs(flipped_angle - current_angle);
+
+    bool direct_valid =
+      (target_angle >= min_steering_position && target_angle <= max_steering_position);
+    bool flipped_valid =
+      (flipped_angle >= min_steering_position && flipped_angle <= max_steering_position);
+
+    bool use_flip = false;
+    if (direct_valid && flipped_valid)
+    {
+      use_flip = (travel_flipped < travel_direct);
+    }
+    else if (!direct_valid && flipped_valid)
+    {
+      use_flip = true;
+    }
+    // else: direct is valid (or neither — pass raw angle to hardware interface)
+
+    if (use_flip)
     {
       optimized_commands[i].drive_velocity = -wheel_commands[i].drive_velocity;
       optimized_commands[i].drive_angular_velocity = -wheel_commands[i].drive_angular_velocity;
-
-      optimized_commands[i].steering_angle = angles::normalize_angle(target_angle + M_PI);
+      optimized_commands[i].steering_angle = flipped_angle;
     }
   }
 

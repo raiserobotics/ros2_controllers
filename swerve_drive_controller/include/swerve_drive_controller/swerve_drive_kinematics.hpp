@@ -94,7 +94,8 @@ public:
    */
   std::array<WheelCommand, 4> optimize_wheel_commands(
     const std::array<WheelCommand, 4> & wheel_commands,
-    const std::array<double, 4> & current_steering_angles);
+    const std::array<double, 4> & current_steering_angles,
+    double min_steering_position, double max_steering_position);
 
   /**
    * @brief Update the odometry based on wheel velocities and elapsed time.

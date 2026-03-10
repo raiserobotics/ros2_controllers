@@ -407,8 +407,9 @@ controller_interface::return_type SwerveController::update_and_write_commands(
     }
   }
 
-  wheel_command =
-    swerveDriveKinematics_.optimize_wheel_commands(wheel_command, current_steering_angles);
+  wheel_command = swerveDriveKinematics_.optimize_wheel_commands(
+    wheel_command, current_steering_angles, params_.steering_min_position,
+    params_.steering_max_position);
 
   std::vector<std::tuple<WheelCommand &, double, std::string>> wheel_data = {
     {wheel_command[0], params_.front_left_velocity_threshold / params_.wheel_radius,

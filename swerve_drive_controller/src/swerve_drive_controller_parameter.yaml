@@ -156,6 +156,18 @@ swerve_drive_controller:
     },
     read_only: true
   }
+  steering_min_position: {
+    type: double,
+    default_value: -3.2,
+    description: "Minimum steering joint position in radians. Used by the wheel command optimizer to determine which angles are reachable. Limit enforcement is delegated to the hardware interface.",
+    read_only: true
+  }
+  steering_max_position: {
+    type: double,
+    default_value: 3.2,
+    description: "Maximum steering joint position in radians. Used by the wheel command optimizer to determine which angles are reachable. Limit enforcement is delegated to the hardware interface.",
+    read_only: true
+  }
   pose_covariance_diagonal: {
     type: double_array,
     default_value: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
