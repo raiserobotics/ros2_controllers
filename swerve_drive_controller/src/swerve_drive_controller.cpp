@@ -407,8 +407,16 @@ controller_interface::return_type SwerveController::update_and_write_commands(
     }
   }
 
+  // Use previous *commanded* angles (not actual feedback) for the flip decision.
+  // The flip optimization computes travel_direct vs travel_flipped as absolute
+  // differences against the reference angle.  Using actual feedback causes a
+  // near-tie to oscillate every cycle when the motor is mid-trajectory: the
+  // tiny position noise each cycle tips the balance back and forth, producing
+  // ±π command swings that send the Kinco drive into runaway.
+  // previous_steering_angles_ is stable (updated from the command output, not
+  // the encoder) so the flip decision is deterministic and consistent.
   wheel_command = swerveDriveKinematics_.optimize_wheel_commands(
-    wheel_command, current_steering_angles, params_.steering_min_position,
+    wheel_command, previous_steering_angles_, params_.steering_min_position,
     params_.steering_max_position);
 
   std::vector<std::tuple<WheelCommand &, double, std::string>> wheel_data = {
