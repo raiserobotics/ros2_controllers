@@ -324,6 +324,7 @@ CallbackReturn SwerveController::on_activate(const rclcpp_lifecycle::State &)
     }
     axle_handles_[i]->set_position(0.0);
     previous_steering_angles_[i] = axle_handles_[i]->get_feedback();
+    prev_steer_pos_[i] = previous_steering_angles_[i];
   }
 
   is_halted_ = false;
@@ -371,7 +372,7 @@ controller_interface::return_type SwerveController::update_reference_from_subscr
 }
 
 controller_interface::return_type SwerveController::update_and_write_commands(
-  const rclcpp::Time & time, const rclcpp::Duration & /*period*/)
+  const rclcpp::Time & time, const rclcpp::Duration & period)
 {
   auto logger = get_node()->get_logger();
 
@@ -437,31 +438,45 @@ controller_interface::return_type SwerveController::update_and_write_commands(
     }
   }
 
-  const double min_steering_error = M_PI / 6.0;  // 30 degrees
+  const double threshold_rad = params_.steering_error_threshold_rad;
+  const bool use_predictive = (params_.velocity_scaling_mode == "predictive");
+
   for (std::size_t i = 0; i < 4; i++)
   {
-    double steering_error = std::abs(
-      angles::shortest_angular_distance(
-        current_steering_angles[i], wheel_command[i].steering_angle));
-
     double velocity_scale = 1.0;
-    if (steering_error > min_steering_error)
+
+    if (use_predictive)
     {
-      if (steering_error >= 1.5608)  // ~89.5 degrees
-      {
-        // cos(1.5608) = 0.01
-        velocity_scale = 0.01 / std::cos(min_steering_error);
-      }
-      else
-      {
-        // Scale velocity based on steering error using cosine function
-        velocity_scale = std::cos(steering_error) / std::cos(min_steering_error);
-      }
+      // Estimate steer velocity from finite differences against previous cycle.
+      const double dt = std::max(1e-3, period.seconds());
+      const double steer_vel_est =
+        (current_steering_angles[i] - prev_steer_pos_[i]) / dt;
+
+      velocity_scale = predictive_scale(
+        current_steering_angles[i], steer_vel_est,
+        wheel_command[i].steering_angle,
+        params_.steer_profile_velocity_rad_s,
+        params_.steer_profile_accel_rad_s2,
+        params_.steer_profile_decel_rad_s2,
+        params_.predictive_look_ahead_s);
+    }
+    else
+    {
+      // Cosine mode (default): use physical steer position vs new target.
+      // Use abs(target - current) rather than shortest_angular_distance to avoid
+      // underestimating travel for bounded joints when error > π.
+      double steer_error = std::abs(wheel_command[i].steering_angle - current_steering_angles[i]);
+      velocity_scale = cosine_scale(steer_error, threshold_rad);
     }
 
-    // Apply velocity scaling
     wheel_command[i].drive_velocity *= velocity_scale;
     wheel_command[i].drive_angular_velocity *= velocity_scale;
+  }
+
+  // Update previous steer positions for next cycle's finite-difference estimate.
+  for (std::size_t i = 0; i < 4; i++)
+  {
+    prev_steer_pos_[i] = current_steering_angles[i];
   }
 
   for (std::size_t i = 0; i < 4; i++)
@@ -488,7 +503,7 @@ controller_interface::return_type SwerveController::update_and_write_commands(
     wheel_handles_[i]->set_velocity(wheel_command[i].drive_angular_velocity);
   }
 
-  const auto update_dt = time - previous_update_timestamp_;
+  const auto & update_dt = period;
   previous_update_timestamp_ = time;
 
   std::array<double, 4> velocity_array{};
@@ -628,6 +643,109 @@ std::vector<hardware_interface::CommandInterface> SwerveController::on_export_re
   }
 
   return reference_interfaces;
+}
+
+// ============================================================================
+// Velocity scaling helpers
+// ============================================================================
+
+double SwerveController::cosine_scale(double steer_error_rad,
+                                      double threshold_rad) const
+{
+  if (steer_error_rad <= threshold_rad) return 1.0;
+
+  // Guard against cos going negative past 90° — floor the scale at a small value.
+  constexpr double NEAR_90_DEG = 1.5608;  // ~89.5°
+  if (steer_error_rad >= NEAR_90_DEG)
+  {
+    // cos(89.5°) ≈ 0.01; normalise by cos(threshold) so scale is continuous at threshold.
+    return 0.01 / std::cos(threshold_rad);
+  }
+  return std::cos(steer_error_rad) / std::cos(threshold_rad);
+}
+
+// Analytical time for a trapezoid (starting at rest) to cover `dist` metres.
+static double trapezoid_time_from_rest(double dist, double vmax, double accel,
+                                       double decel)
+{
+  if (dist <= 0.0) return 0.0;
+  // Distance needed to accel to vmax then decel to 0.
+  const double d_ramp = 0.5 * vmax * vmax / accel + 0.5 * vmax * vmax / decel;
+  if (dist < d_ramp)
+  {
+    // Triangular — never reaches vmax.
+    const double v_peak = std::sqrt(2.0 * dist * accel * decel / (accel + decel));
+    return v_peak / accel + v_peak / decel;
+  }
+  return vmax / accel + (dist - d_ramp) / vmax + vmax / decel;
+}
+
+double SwerveController::trapezoid_time_to_target(double pos, double vel,
+                                                  double target, double vmax,
+                                                  double accel, double decel,
+                                                  double threshold_rad)
+{
+  const double error = target - pos;
+  // Already within threshold?
+  if (std::abs(error) <= threshold_rad) return 0.0;
+
+  const double dir = (error > 0.0) ? 1.0 : -1.0;
+  // Effective distance: stop just inside threshold.
+  double dist = std::abs(error) - threshold_rad;
+
+  double time = 0.0;
+
+  if (dir * vel < 0.0)
+  {
+    // Moving in wrong direction — first coast to a stop.
+    const double t_stop = std::abs(vel) / decel;
+    const double d_overshoot = (vel * vel) / (2.0 * decel);
+    time += t_stop;
+    dist += d_overshoot;  // extra distance to cover after reversing
+    // Now continue from rest.
+    return time + trapezoid_time_from_rest(dist, vmax, accel, decel);
+  }
+
+  // Moving in the right direction at speed |vel|.
+  // Distance that can be "claimed" from the acceleration phase already done:
+  //   d_done = v² / (2·a)  (energy already invested)
+  // Subtract this from dist to get remaining ramp work, and deduct the
+  // partial-accel time that was already spent.
+  const double v_cur = std::abs(vel);
+  const double d_done = (v_cur * v_cur) / (2.0 * accel);
+  const double t_done = v_cur / accel;
+
+  const double dist_remaining = dist - d_done;
+
+  if (dist_remaining <= 0.0)
+  {
+    // Already past the acceleration phase — we're cruising or decelerating.
+    // Approximate using rest-start time from (dist) minus the partial accel time.
+    const double t_full = trapezoid_time_from_rest(dist, vmax, accel, decel);
+    return std::max(0.0, t_full - t_done);
+  }
+  // Time from rest to cover dist, then subtract partial accel time.
+  const double t_full = trapezoid_time_from_rest(dist, vmax, accel, decel);
+  return std::max(0.0, t_full - t_done + time);
+}
+
+double SwerveController::predictive_scale(double steer_pos, double steer_vel,
+                                          double steer_target, double vmax,
+                                          double accel, double decel,
+                                          double look_ahead_s) const
+{
+  constexpr double THRESHOLD_RAD = 0.0873;  // 5°
+  constexpr double MIN_SCALE = 0.02;
+
+  const double t = trapezoid_time_to_target(steer_pos, steer_vel, steer_target,
+                                            vmax, accel, decel, THRESHOLD_RAD);
+  if (t <= 0.0) return 1.0;
+
+  // scale = look_ahead / (look_ahead + remaining_time_beyond_look_ahead)
+  // → 1.0 when t ≤ look_ahead_s
+  // → smoothly falls toward 0 for large t
+  if (t <= look_ahead_s) return 1.0;
+  return std::max(MIN_SCALE, look_ahead_s / t);
 }
 
 }  // namespace swerve_drive_controller

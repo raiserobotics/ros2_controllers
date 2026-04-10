@@ -168,6 +168,58 @@ swerve_drive_controller:
     description: "Maximum steering joint position in radians. Used by the wheel command optimizer to determine which angles are reachable. Limit enforcement is delegated to the hardware interface.",
     read_only: true
   }
+  # ── Velocity scaling configuration ─────────────────────────────────────
+  # Mode "cosine"     : scale = cos(steer_error) / cos(threshold)  [default, stateless]
+  # Mode "predictive" : scale from trapezoid-based time-to-target prediction
+  velocity_scaling_mode: {
+    type: string,
+    default_value: "cosine",
+    description: "Velocity scaling mode: 'cosine' (instantaneous) or 'predictive' (trapezoid-aware)."
+  }
+  steering_error_threshold_rad: {
+    type: double,
+    default_value: 0.5236,
+    description: "Steer error threshold (rad) below which no velocity scaling is applied. Default: π/6 (30 deg).",
+    validation: {
+      "swerve_drive_controller::gt<>": [0.0]
+    }
+  }
+  # Steer trapezoid params — used only in 'predictive' mode.
+  # Must match the values in base.ros2_control.xacro (steer_profile_* properties).
+  steer_profile_velocity_rad_s: {
+    type: double,
+    default_value: 0.885,
+    description: "Max steer speed [rad/s] (trapezoid cruise velocity).",
+    validation: {
+      "swerve_drive_controller::gt<>": [0.0]
+    }
+  }
+  steer_profile_accel_rad_s2: {
+    type: double,
+    default_value: 5.0,
+    description: "Steer profile acceleration [rad/s²].",
+    validation: {
+      "swerve_drive_controller::gt<>": [0.0]
+    }
+  }
+  steer_profile_decel_rad_s2: {
+    type: double,
+    default_value: 5.0,
+    description: "Steer profile deceleration [rad/s²].",
+    validation: {
+      "swerve_drive_controller::gt<>": [0.0]
+    }
+  }
+  # Allow full wheel speed when the steer will finish in <= this many seconds.
+  predictive_look_ahead_s: {
+    type: double,
+    default_value: 0.1,
+    description: "Predictive mode: full wheel speed allowed once steer will align within this time [s].",
+    validation: {
+      "swerve_drive_controller::gt<>": [0.0]
+    }
+  }
+  # ── End velocity scaling ─────────────────────────────────────────────────
   pose_covariance_diagonal: {
     type: double_array,
     default_value: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],

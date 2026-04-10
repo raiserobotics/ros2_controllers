@@ -199,6 +199,9 @@ protected:
 
   const double EPS = 1e-6;
   std::array<double, 4> previous_steering_angles_{};
+  // Steer position from the previous update cycle, used to estimate steer velocity
+  // for the predictive velocity scaler without requiring a velocity state interface.
+  std::array<double, 4> prev_steer_pos_{};
 
   std::shared_ptr<ParamListener> param_listener_;
   Params params_;
@@ -234,6 +237,24 @@ protected:
   bool is_halted_ = false;
   bool reset();
   void halt();
+
+  // ── Velocity scaling helpers ──────────────────────────────────────────────
+
+  // Cosine-based scaling (current default): returns scale ∈ [~0, 1].
+  double cosine_scale(double steer_error_rad, double threshold_rad) const;
+
+  // Predictive scaling: uses the steer trapezoid model to estimate time until
+  // the steer will be within 5° of target, then scales proportionally.
+  // steer_vel is estimated from finite differences (prev_steer_pos_).
+  double predictive_scale(double steer_pos, double steer_vel, double steer_target,
+                          double vmax, double accel, double decel,
+                          double look_ahead_s) const;
+
+  // Analytical time-to-target for a trapezoidal profile starting from (pos, vel).
+  // Returns seconds until within threshold_rad of target.  Returns 0 if already there.
+  static double trapezoid_time_to_target(double pos, double vel, double target,
+                                         double vmax, double accel, double decel,
+                                         double threshold_rad);
 };
 
 }  // namespace swerve_drive_controller
