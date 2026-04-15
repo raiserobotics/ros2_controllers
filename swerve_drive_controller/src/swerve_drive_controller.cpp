@@ -67,8 +67,11 @@ double Wheel::get_feedback()
 
 Axle::Axle(
   std::reference_wrapper<hardware_interface::LoanedCommandInterface> position,
-  std::reference_wrapper<const hardware_interface::LoanedStateInterface> feedback, std::string name)
-: position_(position), feedback_(feedback), name_(std::move(name))
+  std::reference_wrapper<const hardware_interface::LoanedStateInterface> position_feedback,
+  std::reference_wrapper<const hardware_interface::LoanedStateInterface> velocity_feedback,
+  std::string name)
+: position_(position), feedback_(position_feedback), velocity_feedback_(velocity_feedback),
+  name_(std::move(name))
 {
 }
 
@@ -80,6 +83,15 @@ double Axle::get_feedback()
   return Axle::feedback_.get().get_optional().value();
 #else
   return Axle::feedback_.get().get_value();
+#endif
+}
+
+double Axle::get_velocity()
+{
+#if HARDWARE_INTERFACE_VERSION_GTE(4, 0, 0)
+  return Axle::velocity_feedback_.get().get_optional().value();
+#else
+  return Axle::velocity_feedback_.get().get_value();
 #endif
 }
 
@@ -139,6 +151,10 @@ InterfaceConfiguration SwerveController::state_interface_configuration() const
   conf_names.push_back(params_.front_right_axle_joint + "/" + HW_IF_POSITION);
   conf_names.push_back(params_.rear_left_axle_joint + "/" + HW_IF_POSITION);
   conf_names.push_back(params_.rear_right_axle_joint + "/" + HW_IF_POSITION);
+  conf_names.push_back(params_.front_left_axle_joint + "/" + HW_IF_VELOCITY);
+  conf_names.push_back(params_.front_right_axle_joint + "/" + HW_IF_VELOCITY);
+  conf_names.push_back(params_.rear_left_axle_joint + "/" + HW_IF_VELOCITY);
+  conf_names.push_back(params_.rear_right_axle_joint + "/" + HW_IF_VELOCITY);
   return {interface_configuration_type::INDIVIDUAL, conf_names};
 }
 
@@ -324,7 +340,6 @@ CallbackReturn SwerveController::on_activate(const rclcpp_lifecycle::State &)
     }
     axle_handles_[i]->set_position(0.0);
     previous_steering_angles_[i] = axle_handles_[i]->get_feedback();
-    prev_steer_pos_[i] = previous_steering_angles_[i];
   }
 
   is_halted_ = false;
@@ -447,13 +462,8 @@ controller_interface::return_type SwerveController::update_and_write_commands(
 
     if (use_predictive)
     {
-      // Estimate steer velocity from finite differences against previous cycle.
-      const double dt = std::max(1e-3, period.seconds());
-      const double steer_vel_est =
-        (current_steering_angles[i] - prev_steer_pos_[i]) / dt;
-
       velocity_scale = predictive_scale(
-        current_steering_angles[i], steer_vel_est,
+        current_steering_angles[i], axle_handles_[i]->get_velocity(),
         wheel_command[i].steering_angle,
         params_.steer_profile_velocity_rad_s,
         params_.steer_profile_accel_rad_s2,
@@ -471,12 +481,6 @@ controller_interface::return_type SwerveController::update_and_write_commands(
 
     wheel_command[i].drive_velocity *= velocity_scale;
     wheel_command[i].drive_angular_velocity *= velocity_scale;
-  }
-
-  // Update previous steer positions for next cycle's finite-difference estimate.
-  for (std::size_t i = 0; i < 4; i++)
-  {
-    prev_steer_pos_[i] = current_steering_angles[i];
   }
 
   for (std::size_t i = 0; i < 4; i++)

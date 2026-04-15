@@ -73,15 +73,18 @@ class Axle
 public:
   Axle(
     std::reference_wrapper<hardware_interface::LoanedCommandInterface> position,
-    std::reference_wrapper<const hardware_interface::LoanedStateInterface> feedback,
+    std::reference_wrapper<const hardware_interface::LoanedStateInterface> position_feedback,
+    std::reference_wrapper<const hardware_interface::LoanedStateInterface> velocity_feedback,
     std::string name);
 
   void set_position(double position);
   double get_feedback();
+  double get_velocity();
 
 private:
   std::reference_wrapper<hardware_interface::LoanedCommandInterface> position_;
   std::reference_wrapper<const hardware_interface::LoanedStateInterface> feedback_;
+  std::reference_wrapper<const hardware_interface::LoanedStateInterface> velocity_feedback_;
   std::string name_;
 };
 
@@ -186,8 +189,42 @@ private:
     const std::vector<hardware_interface::LoanedStateInterface> & state_interfaces,
     const std::string & name)
   {
-    return get_interface_object<Axle>(
-      command_interfaces, state_interfaces, name, "/position", "position");
+    auto logger = rclcpp::get_logger("SwerveController");
+
+    auto cmd_handle = std::find_if(
+      command_interfaces.begin(), command_interfaces.end(),
+      [&name](const auto & iface) {
+        return iface.get_prefix_name() == name && iface.get_interface_name() == HW_IF_POSITION;
+      });
+    if (cmd_handle == command_interfaces.end())
+    {
+      RCLCPP_ERROR(logger, "Unable to find position command interface for axle: %s", name.c_str());
+      return std::nullopt;
+    }
+
+    auto pos_state = std::find_if(
+      state_interfaces.begin(), state_interfaces.end(),
+      [&name](const auto & iface) {
+        return iface.get_prefix_name() == name && iface.get_interface_name() == HW_IF_POSITION;
+      });
+    if (pos_state == state_interfaces.end())
+    {
+      RCLCPP_ERROR(logger, "Unable to find position state interface for axle: %s", name.c_str());
+      return std::nullopt;
+    }
+
+    auto vel_state = std::find_if(
+      state_interfaces.begin(), state_interfaces.end(),
+      [&name](const auto & iface) {
+        return iface.get_prefix_name() == name && iface.get_interface_name() == HW_IF_VELOCITY;
+      });
+    if (vel_state == state_interfaces.end())
+    {
+      RCLCPP_ERROR(logger, "Unable to find velocity state interface for axle: %s", name.c_str());
+      return std::nullopt;
+    }
+
+    return Axle(std::ref(*cmd_handle), std::ref(*pos_state), std::ref(*vel_state), name);
   }
 
 protected:
@@ -199,9 +236,6 @@ protected:
 
   const double EPS = 1e-6;
   std::array<double, 4> previous_steering_angles_{};
-  // Steer position from the previous update cycle, used to estimate steer velocity
-  // for the predictive velocity scaler without requiring a velocity state interface.
-  std::array<double, 4> prev_steer_pos_{};
 
   std::shared_ptr<ParamListener> param_listener_;
   Params params_;
@@ -245,7 +279,7 @@ protected:
 
   // Predictive scaling: uses the steer trapezoid model to estimate time until
   // the steer will be within 5° of target, then scales proportionally.
-  // steer_vel is estimated from finite differences (prev_steer_pos_).
+  // steer_vel is read directly from the axle velocity state interface.
   double predictive_scale(double steer_pos, double steer_vel, double steer_target,
                           double vmax, double accel, double decel,
                           double look_ahead_s) const;
