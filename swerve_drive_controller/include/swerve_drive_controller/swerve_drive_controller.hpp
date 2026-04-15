@@ -194,7 +194,8 @@ private:
     auto cmd_handle = std::find_if(
       command_interfaces.begin(), command_interfaces.end(),
       [&name](const auto & iface) {
-        return iface.get_prefix_name() == name && iface.get_interface_name() == HW_IF_POSITION;
+        return iface.get_prefix_name() == name &&
+               iface.get_interface_name() == hardware_interface::HW_IF_POSITION;
       });
     if (cmd_handle == command_interfaces.end())
     {
@@ -205,7 +206,8 @@ private:
     auto pos_state = std::find_if(
       state_interfaces.begin(), state_interfaces.end(),
       [&name](const auto & iface) {
-        return iface.get_prefix_name() == name && iface.get_interface_name() == HW_IF_POSITION;
+        return iface.get_prefix_name() == name &&
+               iface.get_interface_name() == hardware_interface::HW_IF_POSITION;
       });
     if (pos_state == state_interfaces.end())
     {
@@ -216,7 +218,8 @@ private:
     auto vel_state = std::find_if(
       state_interfaces.begin(), state_interfaces.end(),
       [&name](const auto & iface) {
-        return iface.get_prefix_name() == name && iface.get_interface_name() == HW_IF_VELOCITY;
+        return iface.get_prefix_name() == name &&
+               iface.get_interface_name() == hardware_interface::HW_IF_VELOCITY;
       });
     if (vel_state == state_interfaces.end())
     {
