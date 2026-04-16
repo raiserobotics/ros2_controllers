@@ -13,6 +13,7 @@
 
 #include "swerve_drive_controller/swerve_drive_controller.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <memory>
 #include <queue>
@@ -338,8 +339,8 @@ CallbackReturn SwerveController::on_activate(const rclcpp_lifecycle::State &)
       RCLCPP_ERROR(logger, "ERROR IN FETCHING axle handle for: %s", axle_joint_names[i].c_str());
       return CallbackReturn::ERROR;
     }
-    axle_handles_[i]->set_position(0.0);
     previous_steering_angles_[i] = axle_handles_[i]->get_feedback();
+    axle_handles_[i]->set_position(previous_steering_angles_[i]);
   }
 
   is_halted_ = false;
@@ -456,13 +457,13 @@ controller_interface::return_type SwerveController::update_and_write_commands(
   const double threshold_rad = params_.steering_error_threshold_rad;
   const bool use_predictive = (params_.velocity_scaling_mode == "predictive");
 
+  // First pass: compute per-wheel scale.
+  std::array<double, 4> velocity_scales{};
   for (std::size_t i = 0; i < 4; i++)
   {
-    double velocity_scale = 1.0;
-
     if (use_predictive)
     {
-      velocity_scale = predictive_scale(
+      velocity_scales[i] = predictive_scale(
         current_steering_angles[i], axle_handles_[i]->get_velocity(),
         wheel_command[i].steering_angle,
         params_.steer_profile_velocity_rad_s,
@@ -476,11 +477,18 @@ controller_interface::return_type SwerveController::update_and_write_commands(
       // Use abs(target - current) rather than shortest_angular_distance to avoid
       // underestimating travel for bounded joints when error > π.
       double steer_error = std::abs(wheel_command[i].steering_angle - current_steering_angles[i]);
-      velocity_scale = cosine_scale(steer_error, threshold_rad);
+      velocity_scales[i] = cosine_scale(steer_error, threshold_rad);
     }
+  }
 
-    wheel_command[i].drive_velocity *= velocity_scale;
-    wheel_command[i].drive_angular_velocity *= velocity_scale;
+  // Global worst-case scaling: apply the minimum scale to all wheels so the
+  // robot moves slower but stays straight while any module is still aligning.
+  const double global_scale = *std::min_element(velocity_scales.begin(), velocity_scales.end());
+
+  for (std::size_t i = 0; i < 4; i++)
+  {
+    wheel_command[i].drive_velocity *= global_scale;
+    wheel_command[i].drive_angular_velocity *= global_scale;
   }
 
   for (std::size_t i = 0; i < 4; i++)
