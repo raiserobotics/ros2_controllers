@@ -347,6 +347,7 @@ CallbackReturn SwerveController::on_activate(const rclcpp_lifecycle::State &)
   drive_state_ = DriveState::IDLE;
   prev_linear_x_ = 0.0;
   prev_linear_y_ = 0.0;
+  last_sent_drive_velocities_.fill(0.0);
   is_halted_ = false;
   subscriber_is_active_ = true;
   RCLCPP_INFO(logger, "Subscriber and publisher are now active.");
@@ -461,13 +462,8 @@ controller_interface::return_type SwerveController::update_and_write_commands(
   const bool is_stop = (std::fabs(linear_x_cmd) < EPS) && (std::fabs(linear_y_cmd) < EPS) &&
                        (std::fabs(angular_cmd) < EPS);
 
-  // Snapshot drive velocities every active cycle so RAMPING_DOWN has something to ramp from.
-  // compute_wheel_commands returns 0 when cmd_vel=0, so we can't use wheel_command during stop.
-  if (!is_stop)
-  {
-    for (std::size_t i = 0; i < 4; ++i)
-      locked_drive_velocities_[i] = wheel_command[i].drive_angular_velocity;
-  }
+  // locked_drive_velocities_ is populated from last_sent_drive_velocities_ (previous cycle's
+  // actual motor command) when entering RAMPING_DOWN — see transition sites below.
 
   // Detect velocity direction reversal (e.g. +x → -x with flip optimization keeping steer fixed).
   // dot < 0 means the new command points opposite to the previous — ramp through zero.
@@ -535,8 +531,9 @@ controller_interface::return_type SwerveController::update_and_write_commands(
     // Steer error outside threshold — must stop driving first.
     if (drive_state_ == DriveState::DRIVING || drive_state_ == DriveState::RAMPING_UP)
     {
-      // Lock current steer targets and begin ramp-down.
+      // Lock steer and drive velocities from the previous cycle's actual motor commands.
       locked_steer_targets_ = previous_steering_angles_;
+      locked_drive_velocities_ = last_sent_drive_velocities_;
       ramp_down_start_scale_ = (drive_state_ == DriveState::DRIVING)
         ? 1.0
         : std::min(1.0, (time - ramp_start_time_).seconds() / ramp_up_s);
@@ -641,6 +638,7 @@ controller_interface::return_type SwerveController::update_and_write_commands(
       previous_steering_angles_[i] = wheel_command[i].steering_angle;
     }
     wheel_handles_[i]->set_velocity(wheel_command[i].drive_angular_velocity);
+    last_sent_drive_velocities_[i] = wheel_command[i].drive_angular_velocity;
   }
 
   if (!is_stop)

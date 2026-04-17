@@ -279,6 +279,7 @@ protected:
   double ramp_down_start_scale_ = 0.0;
   std::array<double, 4> locked_steer_targets_{};
   std::array<double, 4> locked_drive_velocities_{};
+  std::array<double, 4> last_sent_drive_velocities_{};  // what was actually sent last cycle
   double prev_linear_x_ = 0.0;
   double prev_linear_y_ = 0.0;
 };
