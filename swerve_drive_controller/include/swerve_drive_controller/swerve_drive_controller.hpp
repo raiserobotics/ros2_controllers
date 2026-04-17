@@ -272,10 +272,11 @@ protected:
   bool reset();
   void halt();
 
-  // ── EMA velocity filter + steer gating ───────────────────────────────────
-  double filtered_vx_    = 0.0;
-  double filtered_vy_    = 0.0;
+  // ── EMA velocity filter (magnitude-only) ─────────────────────────────────
+  double filtered_speed_ = 0.0;
   double filtered_omega_ = 0.0;
+  double last_dir_x_     = 1.0;
+  double last_dir_y_     = 0.0;
 };
 
 }  // namespace swerve_drive_controller

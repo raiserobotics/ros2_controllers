@@ -343,9 +343,10 @@ CallbackReturn SwerveController::on_activate(const rclcpp_lifecycle::State &)
     axle_handles_[i]->set_position(previous_steering_angles_[i]);
   }
 
-  filtered_vx_ = 0.0;
-  filtered_vy_ = 0.0;
+  filtered_speed_ = 0.0;
   filtered_omega_ = 0.0;
+  last_dir_x_ = 1.0;
+  last_dir_y_ = 0.0;
   is_halted_ = false;
   subscriber_is_active_ = true;
   RCLCPP_INFO(logger, "Subscriber and publisher are now active.");
@@ -414,23 +415,24 @@ controller_interface::return_type SwerveController::update_and_write_commands(
   const bool is_stop = (std::fabs(linear_x_cmd) < EPS) && (std::fabs(linear_y_cmd) < EPS) &&
                        (std::fabs(angular_cmd) < EPS);
 
-  // EMA filter on velocity vector — smooths ramp-up, ramp-down, direction changes, reversals.
-  // Frozen when both cmd and filtered are at zero to avoid accumulating numerical drift.
+  // Magnitude-only EMA: direction is instantaneous (optimizer decides steer),
+  // only speed scalar and omega are filtered. This prevents the direction-sweep
+  // problem where full-vector EMA causes continuous steer target drift.
   const double dt = period.seconds();
-  const double tau = params_.velocity_filter_tau_s;
-  const double alpha = dt / (tau + dt);
-  const bool filtered_at_zero = std::abs(filtered_vx_) < EPS &&
-                                std::abs(filtered_vy_) < EPS &&
-                                std::abs(filtered_omega_) < EPS;
-  if (!is_stop || !filtered_at_zero)
+  const double alpha = dt / (params_.velocity_filter_tau_s + dt);
+
+  const double speed_cmd = std::hypot(linear_x_cmd, linear_y_cmd);
+  if (speed_cmd > EPS)
   {
-    filtered_vx_    += alpha * (linear_x_cmd - filtered_vx_);
-    filtered_vy_    += alpha * (linear_y_cmd - filtered_vy_);
-    filtered_omega_ += alpha * (angular_cmd  - filtered_omega_);
+    last_dir_x_ = linear_x_cmd / speed_cmd;
+    last_dir_y_ = linear_y_cmd / speed_cmd;
   }
+  filtered_speed_ += alpha * (speed_cmd - filtered_speed_);
+  filtered_omega_ += alpha * (angular_cmd - filtered_omega_);
 
   auto wheel_command = swerveDriveKinematics_.compute_wheel_commands(
-    filtered_vx_, filtered_vy_, filtered_omega_, params_.wheel_radius);
+    filtered_speed_ * last_dir_x_, filtered_speed_ * last_dir_y_, filtered_omega_,
+    params_.wheel_radius);
 
   std::array<double, 4> current_steering_angles{};
   for (std::size_t i = 0; i < 4; ++i)
@@ -472,28 +474,6 @@ controller_interface::return_type SwerveController::update_and_write_commands(
     if (wheel_command_.drive_velocity > threshold)
     {
       wheel_command_.drive_velocity = threshold;
-    }
-  }
-
-  // Steer gating: zero drive velocity while any wheel is not yet pointing at its target.
-  // EMA handles smooth ramp-up/down and direction changes — no separate state machine needed.
-  const double settle_thresh = params_.steering_settled_threshold_rad;
-  bool any_unsettled = false;
-  for (std::size_t i = 0; i < 4; ++i)
-  {
-    if (std::abs(wheel_command[i].steering_angle - current_steering_angles[i]) > settle_thresh)
-    {
-      any_unsettled = true;
-      break;
-    }
-  }
-
-  if (any_unsettled)
-  {
-    for (std::size_t i = 0; i < 4; ++i)
-    {
-      wheel_command[i].drive_velocity = 0.0;
-      wheel_command[i].drive_angular_velocity = 0.0;
     }
   }
 
