@@ -272,16 +272,10 @@ protected:
   bool reset();
   void halt();
 
-  // ── Settle-then-ramp state ────────────────────────────────────────────────
-  enum class DriveState { IDLE, STEERING, RAMPING_UP, DRIVING, RAMPING_DOWN };
-  DriveState drive_state_ = DriveState::IDLE;
-  rclcpp::Time ramp_start_time_;
-  double ramp_down_start_scale_ = 0.0;
-  std::array<double, 4> locked_steer_targets_{};
-  std::array<double, 4> locked_drive_velocities_{};
-  std::array<double, 4> last_sent_drive_velocities_{};  // what was actually sent last cycle
-  double prev_linear_x_ = 0.0;
-  double prev_linear_y_ = 0.0;
+  // ── EMA velocity filter + steer gating ───────────────────────────────────
+  double filtered_vx_    = 0.0;
+  double filtered_vy_    = 0.0;
+  double filtered_omega_ = 0.0;
 };
 
 }  // namespace swerve_drive_controller

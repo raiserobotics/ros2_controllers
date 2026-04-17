@@ -168,31 +168,23 @@ swerve_drive_controller:
     description: "Maximum steering joint position in radians. Used by the wheel command optimizer to determine which angles are reachable. Limit enforcement is delegated to the hardware interface.",
     read_only: true
   }
-  # ── Settle-then-ramp velocity gating ─────────────────────────────────────
-  # Wheel velocities are held at zero until all steers are within
-  # steering_settled_threshold_rad of their targets.  Once settled, velocity
-  # ramps linearly from 0 to full over velocity_ramp_up_s.  On stop command,
-  # velocity ramps down to zero over velocity_ramp_down_s before idling.
+  # ── EMA velocity filter + steer gating ───────────────────────────────────
+  # cmd_vel is filtered through an exponential moving average before kinematics.
+  # This smooths ramp-up, ramp-down, direction changes, and reversals with one param.
+  # tau is the time constant in seconds: ~63% of step response reached after tau seconds.
+  # Wheel velocities are held at zero while any steer exceeds the settled threshold.
+  velocity_filter_tau_s: {
+    type: double,
+    default_value: 0.5,
+    description: "EMA time constant (s) for cmd_vel smoothing. Larger = smoother but more lag.",
+    validation: {
+      "swerve_drive_controller::gt<>": [0.0]
+    }
+  }
   steering_settled_threshold_rad: {
     type: double,
     default_value: 0.0873,
-    description: "Steer error threshold (rad) below which wheels are considered settled (default 5°).",
-    validation: {
-      "swerve_drive_controller::gt<>": [0.0]
-    }
-  }
-  velocity_ramp_up_s: {
-    type: double,
-    default_value: 0.5,
-    description: "Time (s) to ramp wheel velocity from zero to full after steers settle.",
-    validation: {
-      "swerve_drive_controller::gt<>": [0.0]
-    }
-  }
-  velocity_ramp_down_s: {
-    type: double,
-    default_value: 0.5,
-    description: "Time (s) to ramp wheel velocity from full to zero on stop command.",
+    description: "Steer error threshold (rad) below which drive velocity is allowed (default 5°).",
     validation: {
       "swerve_drive_controller::gt<>": [0.0]
     }
