@@ -340,7 +340,6 @@ CallbackReturn SwerveController::on_activate(const rclcpp_lifecycle::State &)
       return CallbackReturn::ERROR;
     }
     previous_steering_angles_[i] = axle_handles_[i]->get_feedback();
-    locked_steer_targets_[i] = previous_steering_angles_[i];
     axle_handles_[i]->set_position(previous_steering_angles_[i]);
   }
 
