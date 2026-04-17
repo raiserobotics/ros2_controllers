@@ -277,7 +277,10 @@ protected:
   DriveState drive_state_ = DriveState::IDLE;
   rclcpp::Time ramp_start_time_;
   double ramp_down_start_scale_ = 0.0;
-  std::array<double, 4> locked_steer_targets_{};  // held during RAMPING_DOWN
+  std::array<double, 4> locked_steer_targets_{};
+  std::array<double, 4> locked_drive_velocities_{};
+  double prev_linear_x_ = 0.0;
+  double prev_linear_y_ = 0.0;
 };
 
 }  // namespace swerve_drive_controller

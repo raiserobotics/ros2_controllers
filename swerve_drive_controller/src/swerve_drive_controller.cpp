@@ -345,6 +345,8 @@ CallbackReturn SwerveController::on_activate(const rclcpp_lifecycle::State &)
   }
 
   drive_state_ = DriveState::IDLE;
+  prev_linear_x_ = 0.0;
+  prev_linear_y_ = 0.0;
   is_halted_ = false;
   subscriber_is_active_ = true;
   RCLCPP_INFO(logger, "Subscriber and publisher are now active.");
@@ -459,6 +461,24 @@ controller_interface::return_type SwerveController::update_and_write_commands(
   const bool is_stop = (std::fabs(linear_x_cmd) < EPS) && (std::fabs(linear_y_cmd) < EPS) &&
                        (std::fabs(angular_cmd) < EPS);
 
+  // Snapshot drive velocities every active cycle so RAMPING_DOWN has something to ramp from.
+  // compute_wheel_commands returns 0 when cmd_vel=0, so we can't use wheel_command during stop.
+  if (!is_stop)
+  {
+    for (std::size_t i = 0; i < 4; ++i)
+      locked_drive_velocities_[i] = wheel_command[i].drive_angular_velocity;
+  }
+
+  // Detect velocity direction reversal (e.g. +x → -x with flip optimization keeping steer fixed).
+  // dot < 0 means the new command points opposite to the previous — ramp through zero.
+  constexpr double REVERSAL_SPEED_MIN = 0.05;  // m/s — ignore near-zero commands
+  const double prev_speed = std::hypot(prev_linear_x_, prev_linear_y_);
+  const double curr_speed = std::hypot(linear_x_cmd, linear_y_cmd);
+  const double dot = linear_x_cmd * prev_linear_x_ + linear_y_cmd * prev_linear_y_;
+  const bool velocity_reversal = (dot < 0.0) &&
+                                 (prev_speed > REVERSAL_SPEED_MIN) &&
+                                 (curr_speed > REVERSAL_SPEED_MIN);
+
   // ── Settle-then-ramp velocity gating ─────────────────────────────────────
   // Hold all wheel velocities at zero while any steer is unsettled, then ramp
   // up smoothly.  On stop, ramp down before cutting to zero.
@@ -531,6 +551,22 @@ controller_interface::return_type SwerveController::update_and_write_commands(
       drive_scale = 0.0;
     }
   }
+  else if (velocity_reversal)
+  {
+    // Direction reversed (e.g. +x → -x) — ramp to zero before applying new velocity.
+    // Steer may not change (flip optimizer handles it), so lock current steer and ramp down.
+    if (drive_state_ == DriveState::DRIVING || drive_state_ == DriveState::RAMPING_UP)
+    {
+      locked_steer_targets_ = previous_steering_angles_;
+      ramp_down_start_scale_ = (drive_state_ == DriveState::DRIVING)
+        ? 1.0
+        : std::min(1.0, (time - ramp_start_time_).seconds() / ramp_up_s);
+      ramp_start_time_ = time;
+      drive_state_ = DriveState::RAMPING_DOWN;
+      drive_scale = ramp_down_start_scale_;
+    }
+    // If already stopped, no ramp needed — fall through to normal driving next cycle.
+  }
   else if (is_stop)
   {
     if (drive_state_ == DriveState::DRIVING || drive_state_ == DriveState::RAMPING_UP)
@@ -572,8 +608,17 @@ controller_interface::return_type SwerveController::update_and_write_commands(
 
   for (std::size_t i = 0; i < 4; i++)
   {
-    wheel_command[i].drive_velocity *= drive_scale;
-    wheel_command[i].drive_angular_velocity *= drive_scale;
+    if (drive_state_ == DriveState::RAMPING_DOWN)
+    {
+      // Use locked velocities — wheel_command has 0 when cmd_vel=0.
+      wheel_command[i].drive_velocity = locked_drive_velocities_[i] * drive_scale;
+      wheel_command[i].drive_angular_velocity = locked_drive_velocities_[i] * drive_scale;
+    }
+    else
+    {
+      wheel_command[i].drive_velocity *= drive_scale;
+      wheel_command[i].drive_angular_velocity *= drive_scale;
+    }
   }
 
   for (std::size_t i = 0; i < 4; i++)
@@ -596,6 +641,12 @@ controller_interface::return_type SwerveController::update_and_write_commands(
       previous_steering_angles_[i] = wheel_command[i].steering_angle;
     }
     wheel_handles_[i]->set_velocity(wheel_command[i].drive_angular_velocity);
+  }
+
+  if (!is_stop)
+  {
+    prev_linear_x_ = linear_x_cmd;
+    prev_linear_y_ = linear_y_cmd;
   }
 
   const auto & update_dt = period;
