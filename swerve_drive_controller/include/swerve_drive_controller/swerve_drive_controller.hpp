@@ -272,11 +272,10 @@ protected:
   bool reset();
   void halt();
 
-  // ── EMA velocity filter (magnitude-only) ─────────────────────────────────
-  double filtered_speed_ = 0.0;
-  double filtered_omega_ = 0.0;
-  double last_dir_x_     = 1.0;
-  double last_dir_y_     = 0.0;
+  // ── Per-wheel EMA on drive velocity ──────────────────────────────────────
+  // Applied after kinematics + optimizer. Smooths ramp-up, ramp-down, and
+  // optimizer flip events (drive sign changes) without pre-filtering cmd_vel.
+  std::array<double, 4> filtered_drive_{};
 };
 
 }  // namespace swerve_drive_controller

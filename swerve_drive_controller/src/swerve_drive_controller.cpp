@@ -343,10 +343,7 @@ CallbackReturn SwerveController::on_activate(const rclcpp_lifecycle::State &)
     axle_handles_[i]->set_position(previous_steering_angles_[i]);
   }
 
-  filtered_speed_ = 0.0;
-  filtered_omega_ = 0.0;
-  last_dir_x_ = 1.0;
-  last_dir_y_ = 0.0;
+  filtered_drive_.fill(0.0);
   is_halted_ = false;
   subscriber_is_active_ = true;
   RCLCPP_INFO(logger, "Subscriber and publisher are now active.");
@@ -415,24 +412,13 @@ controller_interface::return_type SwerveController::update_and_write_commands(
   const bool is_stop = (std::fabs(linear_x_cmd) < EPS) && (std::fabs(linear_y_cmd) < EPS) &&
                        (std::fabs(angular_cmd) < EPS);
 
-  // Magnitude-only EMA: direction is instantaneous (optimizer decides steer),
-  // only speed scalar and omega are filtered. This prevents the direction-sweep
-  // problem where full-vector EMA causes continuous steer target drift.
+  // Compute wheel commands from raw cmd_vel — no pre-filtering.
+  // EMA is applied per-wheel after the optimizer (see below).
   const double dt = period.seconds();
   const double alpha = dt / (params_.velocity_filter_tau_s + dt);
 
-  const double speed_cmd = std::hypot(linear_x_cmd, linear_y_cmd);
-  if (speed_cmd > EPS)
-  {
-    last_dir_x_ = linear_x_cmd / speed_cmd;
-    last_dir_y_ = linear_y_cmd / speed_cmd;
-  }
-  filtered_speed_ += alpha * (speed_cmd - filtered_speed_);
-  filtered_omega_ += alpha * (angular_cmd - filtered_omega_);
-
   auto wheel_command = swerveDriveKinematics_.compute_wheel_commands(
-    filtered_speed_ * last_dir_x_, filtered_speed_ * last_dir_y_, filtered_omega_,
-    params_.wheel_radius);
+    linear_x_cmd, linear_y_cmd, angular_cmd, params_.wheel_radius);
 
   std::array<double, 4> current_steering_angles{};
   for (std::size_t i = 0; i < 4; ++i)
@@ -477,6 +463,16 @@ controller_interface::return_type SwerveController::update_and_write_commands(
     }
   }
 
+  // Per-wheel EMA on drive velocity — applied after optimizer so flip events
+  // (drive sign changes) are ramped smoothly through zero rather than stepped.
+  // cmd_vel continuity guarantees kinematic consistency across all 4 wheels.
+  for (std::size_t i = 0; i < 4; ++i)
+  {
+    filtered_drive_[i] += alpha * (wheel_command[i].drive_angular_velocity - filtered_drive_[i]);
+    wheel_command[i].drive_angular_velocity = filtered_drive_[i];
+    wheel_command[i].drive_velocity = filtered_drive_[i] * params_.wheel_radius;
+  }
+
   for (std::size_t i = 0; i < 4; i++)
   {
     if (!axle_handles_[i].has_value() || !wheel_handles_[i].has_value())
@@ -489,6 +485,7 @@ controller_interface::return_type SwerveController::update_and_write_commands(
     if (is_stop)
     {
       axle_handles_[i]->set_position(previous_steering_angles_[i]);
+      filtered_drive_[i] = 0.0;
     }
     else
     {
