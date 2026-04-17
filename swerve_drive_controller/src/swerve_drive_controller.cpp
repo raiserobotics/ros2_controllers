@@ -411,13 +411,23 @@ controller_interface::return_type SwerveController::update_and_write_commands(
     return controller_interface::return_type::OK;
   }
 
+  const bool is_stop = (std::fabs(linear_x_cmd) < EPS) && (std::fabs(linear_y_cmd) < EPS) &&
+                       (std::fabs(angular_cmd) < EPS);
+
   // EMA filter on velocity vector — smooths ramp-up, ramp-down, direction changes, reversals.
+  // Frozen when both cmd and filtered are at zero to avoid accumulating numerical drift.
   const double dt = period.seconds();
   const double tau = params_.velocity_filter_tau_s;
   const double alpha = dt / (tau + dt);
-  filtered_vx_    += alpha * (linear_x_cmd - filtered_vx_);
-  filtered_vy_    += alpha * (linear_y_cmd - filtered_vy_);
-  filtered_omega_ += alpha * (angular_cmd  - filtered_omega_);
+  const bool filtered_at_zero = std::abs(filtered_vx_) < EPS &&
+                                std::abs(filtered_vy_) < EPS &&
+                                std::abs(filtered_omega_) < EPS;
+  if (!is_stop || !filtered_at_zero)
+  {
+    filtered_vx_    += alpha * (linear_x_cmd - filtered_vx_);
+    filtered_vy_    += alpha * (linear_y_cmd - filtered_vy_);
+    filtered_omega_ += alpha * (angular_cmd  - filtered_omega_);
+  }
 
   auto wheel_command = swerveDriveKinematics_.compute_wheel_commands(
     filtered_vx_, filtered_vy_, filtered_omega_, params_.wheel_radius);
@@ -464,10 +474,6 @@ controller_interface::return_type SwerveController::update_and_write_commands(
       wheel_command_.drive_velocity = threshold;
     }
   }
-
-  // is_stop on raw cmd_vel — holds steer at last position when joystick is released.
-  const bool is_stop = (std::fabs(linear_x_cmd) < EPS) && (std::fabs(linear_y_cmd) < EPS) &&
-                       (std::fabs(angular_cmd) < EPS);
 
   // Steer gating: zero drive velocity while any wheel is not yet pointing at its target.
   // EMA handles smooth ramp-up/down and direction changes — no separate state machine needed.
