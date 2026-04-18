@@ -487,7 +487,6 @@ controller_interface::return_type SwerveController::update_and_write_commands(
     if (is_stop)
     {
       axle_handles_[i]->set_position(previous_steering_angles_[i]);
-      filtered_drive_[i] = 0.0;
     }
     else
     {
