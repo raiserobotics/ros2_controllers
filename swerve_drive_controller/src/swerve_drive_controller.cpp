@@ -18,7 +18,6 @@
 #include <memory>
 #include <queue>
 #include <string>
-#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -459,35 +458,14 @@ controller_interface::return_type SwerveController::update_and_write_commands(
     }
   }
 
-  std::vector<std::tuple<WheelCommand &, double, std::string>> wheel_data = {
-    {wheel_command[0], params_.front_left_velocity_threshold / params_.wheel_radius,
-     "front_left_wheel"},
-    {wheel_command[1], params_.front_right_velocity_threshold / params_.wheel_radius,
-     "front_right_wheel"},
-    {wheel_command[2], params_.rear_left_velocity_threshold / params_.wheel_radius,
-     "rear_left_wheel"},
-    {wheel_command[3], params_.rear_right_velocity_threshold / params_.wheel_radius,
-     "rear_right_wheel"}};
+  const std::array<double, 4> thresholds = {
+    params_.front_left_velocity_threshold  / params_.wheel_radius,
+    params_.front_right_velocity_threshold / params_.wheel_radius,
+    params_.rear_left_velocity_threshold   / params_.wheel_radius,
+    params_.rear_right_velocity_threshold  / params_.wheel_radius,
+  };
 
-  for (const auto & [wheel_command_, threshold, label] : wheel_data)
-  {
-    if (wheel_command_.drive_velocity > threshold)
-    {
-      wheel_command_.drive_velocity = threshold;
-    }
-  }
-
-  // Per-wheel EMA on drive velocity — applied after optimizer so flip events
-  // (drive sign changes) are ramped smoothly through zero rather than stepped.
-  // cmd_vel continuity guarantees kinematic consistency across all 4 wheels.
   for (std::size_t i = 0; i < 4; ++i)
-  {
-    filtered_drive_[i] += alpha * (wheel_command[i].drive_angular_velocity - filtered_drive_[i]);
-    wheel_command[i].drive_angular_velocity = filtered_drive_[i];
-    wheel_command[i].drive_velocity = filtered_drive_[i] * params_.wheel_radius;
-  }
-
-  for (std::size_t i = 0; i < 4; i++)
   {
     if (!axle_handles_[i].has_value() || !wheel_handles_[i].has_value())
     {
@@ -495,6 +473,16 @@ controller_interface::return_type SwerveController::update_and_write_commands(
         "Axle or Wheel handle is nullptr for: " + axle_joint_names[i] + " / " +
         wheel_joint_names[i]);
     }
+
+    // Cap (both directions) → gate → EMA, all in one pass.
+    // Cap bounds what EMA can track; gate zeroes drive during steer travel;
+    // EMA smooths ramp-up, ramp-down, and optimizer sign-flip events.
+    double target = any_unsettled ? 0.0 :
+      std::clamp(wheel_command[i].drive_angular_velocity, -thresholds[i], thresholds[i]);
+
+    filtered_drive_[i] += alpha * (target - filtered_drive_[i]);
+    wheel_command[i].drive_angular_velocity = filtered_drive_[i];
+    wheel_command[i].drive_velocity = filtered_drive_[i] * params_.wheel_radius;
 
     if (is_stop)
     {
