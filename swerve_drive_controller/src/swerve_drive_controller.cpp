@@ -412,38 +412,52 @@ controller_interface::return_type SwerveController::update_and_write_commands(
   const bool is_stop = (std::fabs(linear_x_cmd) < EPS) && (std::fabs(linear_y_cmd) < EPS) &&
                        (std::fabs(angular_cmd) < EPS);
 
-  // Compute wheel commands from raw cmd_vel — no pre-filtering.
-  // EMA is applied per-wheel after the optimizer (see below).
   const double dt = period.seconds();
   const double alpha = dt / (params_.velocity_filter_tau_s + dt);
 
-  auto wheel_command = swerveDriveKinematics_.compute_wheel_commands(
-    linear_x_cmd, linear_y_cmd, angular_cmd, params_.wheel_radius);
-
+  // Read actual steer feedback for gate decision.
   std::array<double, 4> current_steering_angles{};
   for (std::size_t i = 0; i < 4; ++i)
   {
-    if (axle_handles_[i].has_value())
+    current_steering_angles[i] =
+      axle_handles_[i].has_value() ? axle_handles_[i]->get_feedback() : previous_steering_angles_[i];
+  }
+
+  // Gate: compare actual feedback vs last commanded target.
+  // Fires when any steer is still traveling to its target — suppresses drive
+  // so wheels don't push sideways during steer travel.
+  bool any_unsettled = false;
+  for (std::size_t i = 0; i < 4; ++i)
+  {
+    if (std::abs(current_steering_angles[i] - previous_steering_angles_[i]) >
+        params_.steering_settled_threshold_rad)
     {
-      current_steering_angles[i] = axle_handles_[i]->get_feedback();
-    }
-    else
-    {
-      current_steering_angles[i] = previous_steering_angles_[i];
+      any_unsettled = true;
+      break;
     }
   }
 
-  // Use previous *commanded* angles (not actual feedback) for the flip decision.
-  // The flip optimization computes travel_direct vs travel_flipped as absolute
-  // differences against the reference angle.  Using actual feedback causes a
-  // near-tie to oscillate every cycle when the motor is mid-trajectory: the
-  // tiny position noise each cycle tips the balance back and forth, producing
-  // ±π command swings that send the Kinco drive into runaway.
-  // previous_steering_angles_ is stable (updated from the command output, not
-  // the encoder) so the flip decision is deterministic and consistent.
+  // Steer gets raw cmd_vel so wheels track the intended direction even during gate.
+  // Use previous *commanded* angles (not actual feedback) for the flip decision:
+  // actual feedback mid-trajectory causes near-ties to oscillate every cycle,
+  // producing ±π command swings. previous_steering_angles_ is stable.
+  auto wheel_command = swerveDriveKinematics_.compute_wheel_commands(
+    linear_x_cmd, linear_y_cmd, angular_cmd, params_.wheel_radius);
+
   wheel_command = swerveDriveKinematics_.optimize_wheel_commands(
     wheel_command, previous_steering_angles_, params_.steering_min_position,
     params_.steering_max_position);
+
+  // Drive gets gated post-optimize: zero drive while any steer is unsettled.
+  // EMA downstream smooths gate-open and gate-close transitions.
+  if (any_unsettled)
+  {
+    for (std::size_t i = 0; i < 4; ++i)
+    {
+      wheel_command[i].drive_angular_velocity = 0.0;
+      wheel_command[i].drive_velocity = 0.0;
+    }
+  }
 
   std::vector<std::tuple<WheelCommand &, double, std::string>> wheel_data = {
     {wheel_command[0], params_.front_left_velocity_threshold / params_.wheel_radius,

@@ -168,18 +168,27 @@ swerve_drive_controller:
     description: "Maximum steering joint position in radians. Used by the wheel command optimizer to determine which angles are reachable. Limit enforcement is delegated to the hardware interface.",
     read_only: true
   }
-  # ── EMA velocity filter (magnitude-only) ─────────────────────────────────
-  # Speed magnitude is filtered through an EMA; direction is applied instantaneously.
-  # tau is the time constant in seconds: ~63% of step response reached after tau seconds.
-  velocity_filter_tau_s: {
+  # ── Drive gating + EMA ───────────────────────────────────────────────────
+  # steering_settled_threshold_rad: steer error (actual vs commanded) above which
+  # drive is gated to zero. EMA smooths the gate-open/close transitions.
+  # velocity_filter_tau_s: EMA time constant for per-wheel drive smoothing.
+  steering_settled_threshold_rad: {
     type: double,
-    default_value: 0.5,
-    description: "EMA time constant (s) for speed magnitude smoothing. Larger = smoother but more lag.",
+    default_value: 0.0873,
+    description: "Steer error threshold (rad) above which drive is suppressed. Default ~5°.",
     validation: {
       "swerve_drive_controller::gt<>": [0.0]
     }
   }
-  # ── End EMA filter ───────────────────────────────────────────────────────
+  velocity_filter_tau_s: {
+    type: double,
+    default_value: 0.5,
+    description: "EMA time constant (s) for per-wheel drive velocity smoothing.",
+    validation: {
+      "swerve_drive_controller::gt<>": [0.0]
+    }
+  }
+  # ── End drive gating + EMA ───────────────────────────────────────────────
   pose_covariance_diagonal: {
     type: double_array,
     default_value: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
