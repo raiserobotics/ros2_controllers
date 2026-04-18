@@ -462,7 +462,7 @@ controller_interface::return_type SwerveController::update_and_write_commands(
     params_.front_left_velocity_threshold  / params_.wheel_radius,
     params_.front_right_velocity_threshold / params_.wheel_radius,
     params_.rear_left_velocity_threshold   / params_.wheel_radius,
-    params_.rear_right_velocity_threshold  / params_.wheel_radius,
+    params_.rear_right_velocity_threshold  / params_.wheel_radius
   };
 
   for (std::size_t i = 0; i < 4; ++i)
