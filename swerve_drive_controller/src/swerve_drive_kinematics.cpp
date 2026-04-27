@@ -76,39 +76,43 @@ std::array<WheelCommand, 4> SwerveDriveKinematics::optimize_wheel_commands(
 {
   std::array<WheelCommand, 4> optimized_commands = wheel_commands;
 
+  // For symmetric limits ±L, equivalent wheel orientations are target + k·π for integer k.
+  // Even k: same drive direction. Odd k: drive negated (flip).
+  // Check all k up to ±(n+1) where n = floor(L/π) to cover candidates reachable within limits.
+  // Joint limits are hard constraints — no epsilon.
+  const int n = static_cast<int>(std::floor(max_steering_position / M_PI)) + 1;
+
   for (std::size_t i = 0; i < 4; i++)
   {
-    double target_angle = wheel_commands[i].steering_angle;
+    double target_angle  = wheel_commands[i].steering_angle;
     double current_angle = current_steering_angles[i];
 
-    double flipped_angle = angles::normalize_angle(target_angle + M_PI);
+    bool   best_valid  = (target_angle >= min_steering_position &&
+                          target_angle <= max_steering_position);
+    double best_travel = std::abs(target_angle - current_angle);
+    double best_angle  = target_angle;
+    bool   best_negate = false;
 
-    // Use physical travel distance (not circular shortest-path) because steering joints
-    // are bounded — they cannot wrap around through ±pi like a continuous joint.
-    double travel_direct = std::abs(target_angle - current_angle);
-    double travel_flipped = std::abs(flipped_angle - current_angle);
-
-    bool direct_valid =
-      (target_angle >= min_steering_position && target_angle <= max_steering_position);
-    bool flipped_valid =
-      (flipped_angle >= min_steering_position && flipped_angle <= max_steering_position);
-
-    bool use_flip = false;
-    if (direct_valid && flipped_valid)
+    for (int k = -n; k <= n; ++k)
     {
-      use_flip = (travel_flipped < travel_direct);
+      if (k == 0) continue;
+      double candidate = target_angle + k * M_PI;
+      if (candidate < min_steering_position || candidate > max_steering_position) continue;
+      double travel = std::abs(candidate - current_angle);
+      if (travel < best_travel || !best_valid)
+      {
+        best_travel = travel;
+        best_angle  = candidate;
+        best_negate = (std::abs(k) % 2 == 1);
+        best_valid  = true;
+      }
     }
-    else if (!direct_valid && flipped_valid)
-    {
-      use_flip = true;
-    }
-    // else: direct is valid (or neither — pass raw angle to hardware interface)
 
-    if (use_flip)
+    optimized_commands[i].steering_angle = best_angle;
+    if (best_negate)
     {
-      optimized_commands[i].drive_velocity = -wheel_commands[i].drive_velocity;
+      optimized_commands[i].drive_velocity         = -wheel_commands[i].drive_velocity;
       optimized_commands[i].drive_angular_velocity = -wheel_commands[i].drive_angular_velocity;
-      optimized_commands[i].steering_angle = flipped_angle;
     }
   }
 
