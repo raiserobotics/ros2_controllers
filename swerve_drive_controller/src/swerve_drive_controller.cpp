@@ -610,11 +610,12 @@ void SwerveController::halt()
 
 bool SwerveController::on_set_chained_mode(bool /*chained_mode*/) { return true; }
 
-std::vector<hardware_interface::CommandInterface> SwerveController::on_export_reference_interfaces()
+std::vector<hardware_interface::CommandInterface::SharedPtr>
+SwerveController::on_export_reference_interfaces_list()
 {
   reference_interfaces_.resize(3, std::numeric_limits<double>::quiet_NaN());
 
-  std::vector<hardware_interface::CommandInterface> reference_interfaces;
+  std::vector<hardware_interface::CommandInterface::SharedPtr> reference_interfaces;
   reference_interfaces.reserve(reference_interfaces_.size());
 
   std::vector<std::string> reference_interface_names = {"/linear/x", "/linear/y", "/angular/z"};
@@ -622,7 +623,7 @@ std::vector<hardware_interface::CommandInterface> SwerveController::on_export_re
   for (size_t i = 0; i < reference_interfaces_.size(); ++i)
   {
     reference_interfaces.push_back(
-      hardware_interface::CommandInterface(
+      std::make_shared<hardware_interface::CommandInterface>(
         get_node()->get_name() + reference_interface_names[i], hardware_interface::HW_IF_VELOCITY,
         &reference_interfaces_[i]));
   }
