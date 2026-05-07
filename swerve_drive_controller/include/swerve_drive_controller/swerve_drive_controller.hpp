@@ -200,6 +200,7 @@ protected:
 
   const double EPS = 1e-6;
   std::array<double, 4> previous_steering_angles_{};
+  std::array<double, 3> cmd_refs_{};
 
   std::shared_ptr<ParamListener> param_listener_;
   Params params_;

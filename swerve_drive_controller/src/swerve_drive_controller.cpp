@@ -202,9 +202,7 @@ CallbackReturn SwerveController::on_configure(const rclcpp_lifecycle::State & /*
       return CallbackReturn::ERROR;
     }
 
-    // Allocate reference interfaces for chainable controller (linear.x, linear.y, angular.z)
-    const int nr_ref_itfs = 3;
-    reference_interfaces_.resize(nr_ref_itfs, std::numeric_limits<double>::quiet_NaN());
+    cmd_refs_.fill(std::numeric_limits<double>::quiet_NaN());
 
     TwistStamped empty_twist;
     empty_twist.header.stamp = get_node()->now();
@@ -347,17 +345,17 @@ controller_interface::return_type SwerveController::update_reference_from_subscr
   // Brake if cmd_vel has timeout, override the stored command
   if (age_of_last_command > cmd_vel_timeout_)
   {
-    reference_interfaces_[0] = 0.0;
-    reference_interfaces_[1] = 0.0;
-    reference_interfaces_[2] = 0.0;
+    cmd_refs_[0] = 0.0;
+    cmd_refs_[1] = 0.0;
+    cmd_refs_[2] = 0.0;
   }
   else if (
     std::isfinite(command_msg_.twist.linear.x) && std::isfinite(command_msg_.twist.linear.y) &&
     std::isfinite(command_msg_.twist.angular.z))
   {
-    reference_interfaces_[0] = command_msg_.twist.linear.x;
-    reference_interfaces_[1] = command_msg_.twist.linear.y;
-    reference_interfaces_[2] = command_msg_.twist.angular.z;
+    cmd_refs_[0] = command_msg_.twist.linear.x;
+    cmd_refs_[1] = command_msg_.twist.linear.y;
+    cmd_refs_[2] = command_msg_.twist.angular.z;
   }
   else
   {
@@ -381,9 +379,9 @@ controller_interface::return_type SwerveController::update_and_write_commands(
     return controller_interface::return_type::OK;
   }
 
-  double linear_x_cmd = reference_interfaces_[0];
-  double linear_y_cmd = reference_interfaces_[1];
-  double angular_cmd = reference_interfaces_[2];
+  double linear_x_cmd = cmd_refs_[0];
+  double linear_y_cmd = cmd_refs_[1];
+  double angular_cmd = cmd_refs_[2];
 
   if (!std::isfinite(linear_x_cmd) || !std::isfinite(linear_y_cmd) || !std::isfinite(angular_cmd))
   {
@@ -613,19 +611,19 @@ bool SwerveController::on_set_chained_mode(bool /*chained_mode*/) { return true;
 std::vector<hardware_interface::CommandInterface::SharedPtr>
 SwerveController::on_export_reference_interfaces_list()
 {
-  reference_interfaces_.resize(3, std::numeric_limits<double>::quiet_NaN());
+  cmd_refs_.fill(std::numeric_limits<double>::quiet_NaN());
+
+  const std::vector<std::string> names = {"/linear/x", "/linear/y", "/angular/z"};
 
   std::vector<hardware_interface::CommandInterface::SharedPtr> reference_interfaces;
-  reference_interfaces.reserve(reference_interfaces_.size());
+  reference_interfaces.reserve(names.size());
 
-  std::vector<std::string> reference_interface_names = {"/linear/x", "/linear/y", "/angular/z"};
-
-  for (size_t i = 0; i < reference_interfaces_.size(); ++i)
+  for (size_t i = 0; i < names.size(); ++i)
   {
     reference_interfaces.push_back(
       std::make_shared<hardware_interface::CommandInterface>(
-        get_node()->get_name() + reference_interface_names[i], hardware_interface::HW_IF_VELOCITY,
-        &reference_interfaces_[i]));
+        get_node()->get_name() + names[i], hardware_interface::HW_IF_VELOCITY,
+        &cmd_refs_[i]));
   }
 
   return reference_interfaces;
