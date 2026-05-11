@@ -73,15 +73,18 @@ class Axle
 public:
   Axle(
     std::reference_wrapper<hardware_interface::LoanedCommandInterface> position,
-    std::reference_wrapper<const hardware_interface::LoanedStateInterface> feedback,
+    std::reference_wrapper<const hardware_interface::LoanedStateInterface> position_feedback,
+    std::reference_wrapper<const hardware_interface::LoanedStateInterface> velocity_feedback,
     std::string name);
 
   void set_position(double position);
   double get_feedback();
+  double get_velocity();
 
 private:
   std::reference_wrapper<hardware_interface::LoanedCommandInterface> position_;
   std::reference_wrapper<const hardware_interface::LoanedStateInterface> feedback_;
+  std::reference_wrapper<const hardware_interface::LoanedStateInterface> velocity_feedback_;
   std::string name_;
 };
 
@@ -186,8 +189,42 @@ private:
     const std::vector<hardware_interface::LoanedStateInterface> & state_interfaces,
     const std::string & name)
   {
-    return get_interface_object<Axle>(
-      command_interfaces, state_interfaces, name, "/position", "position");
+    auto logger = rclcpp::get_logger("SwerveController");
+
+    auto cmd_handle = std::find_if(
+      command_interfaces.begin(), command_interfaces.end(),
+      [&name](const auto & iface) {
+        return iface.get_prefix_name() == name && iface.get_interface_name() == "position";
+      });
+    if (cmd_handle == command_interfaces.end())
+    {
+      RCLCPP_ERROR(logger, "Unable to find position command interface for axle: %s", name.c_str());
+      return std::nullopt;
+    }
+
+    auto pos_state = std::find_if(
+      state_interfaces.begin(), state_interfaces.end(),
+      [&name](const auto & iface) {
+        return iface.get_prefix_name() == name && iface.get_interface_name() == "position";
+      });
+    if (pos_state == state_interfaces.end())
+    {
+      RCLCPP_ERROR(logger, "Unable to find position state interface for axle: %s", name.c_str());
+      return std::nullopt;
+    }
+
+    auto vel_state = std::find_if(
+      state_interfaces.begin(), state_interfaces.end(),
+      [&name](const auto & iface) {
+        return iface.get_prefix_name() == name && iface.get_interface_name() == "velocity";
+      });
+    if (vel_state == state_interfaces.end())
+    {
+      RCLCPP_ERROR(logger, "Unable to find velocity state interface for axle: %s", name.c_str());
+      return std::nullopt;
+    }
+
+    return Axle(std::ref(*cmd_handle), std::ref(*pos_state), std::ref(*vel_state), name);
   }
 
 protected:
@@ -234,6 +271,11 @@ protected:
   bool is_halted_ = false;
   bool reset();
   void halt();
+
+  // ── Per-wheel EMA on drive velocity ──────────────────────────────────────
+  // Applied after kinematics + optimizer. Smooths ramp-up, ramp-down, and
+  // optimizer flip events (drive sign changes) without pre-filtering cmd_vel.
+  std::array<double, 4> filtered_drive_{};
 };
 
 }  // namespace swerve_drive_controller

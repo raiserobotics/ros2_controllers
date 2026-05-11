@@ -13,11 +13,11 @@
 
 #include "swerve_drive_controller/swerve_drive_controller.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <memory>
 #include <queue>
 #include <string>
-#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -67,8 +67,11 @@ double Wheel::get_feedback()
 
 Axle::Axle(
   std::reference_wrapper<hardware_interface::LoanedCommandInterface> position,
-  std::reference_wrapper<const hardware_interface::LoanedStateInterface> feedback, std::string name)
-: position_(position), feedback_(feedback), name_(std::move(name))
+  std::reference_wrapper<const hardware_interface::LoanedStateInterface> position_feedback,
+  std::reference_wrapper<const hardware_interface::LoanedStateInterface> velocity_feedback,
+  std::string name)
+: position_(position), feedback_(position_feedback), velocity_feedback_(velocity_feedback),
+  name_(std::move(name))
 {
 }
 
@@ -80,6 +83,15 @@ double Axle::get_feedback()
   return Axle::feedback_.get().get_optional().value();
 #else
   return Axle::feedback_.get().get_value();
+#endif
+}
+
+double Axle::get_velocity()
+{
+#if HARDWARE_INTERFACE_VERSION_GTE(4, 0, 0)
+  return Axle::velocity_feedback_.get().get_optional().value();
+#else
+  return Axle::velocity_feedback_.get().get_value();
 #endif
 }
 
@@ -139,6 +151,10 @@ InterfaceConfiguration SwerveController::state_interface_configuration() const
   conf_names.push_back(params_.front_right_axle_joint + "/" + HW_IF_POSITION);
   conf_names.push_back(params_.rear_left_axle_joint + "/" + HW_IF_POSITION);
   conf_names.push_back(params_.rear_right_axle_joint + "/" + HW_IF_POSITION);
+  conf_names.push_back(params_.front_left_axle_joint + "/" + HW_IF_VELOCITY);
+  conf_names.push_back(params_.front_right_axle_joint + "/" + HW_IF_VELOCITY);
+  conf_names.push_back(params_.rear_left_axle_joint + "/" + HW_IF_VELOCITY);
+  conf_names.push_back(params_.rear_right_axle_joint + "/" + HW_IF_VELOCITY);
   return {interface_configuration_type::INDIVIDUAL, conf_names};
 }
 
@@ -322,10 +338,11 @@ CallbackReturn SwerveController::on_activate(const rclcpp_lifecycle::State &)
       RCLCPP_ERROR(logger, "ERROR IN FETCHING axle handle for: %s", axle_joint_names[i].c_str());
       return CallbackReturn::ERROR;
     }
-    axle_handles_[i]->set_position(0.0);
     previous_steering_angles_[i] = axle_handles_[i]->get_feedback();
+    axle_handles_[i]->set_position(previous_steering_angles_[i]);
   }
 
+  filtered_drive_.fill(0.0);
   is_halted_ = false;
   subscriber_is_active_ = true;
   RCLCPP_INFO(logger, "Subscriber and publisher are now active.");
@@ -371,7 +388,7 @@ controller_interface::return_type SwerveController::update_reference_from_subscr
 }
 
 controller_interface::return_type SwerveController::update_and_write_commands(
-  const rclcpp::Time & time, const rclcpp::Duration & /*period*/)
+  const rclcpp::Time & time, const rclcpp::Duration & period)
 {
   auto logger = get_node()->get_logger();
 
@@ -391,80 +408,64 @@ controller_interface::return_type SwerveController::update_and_write_commands(
     return controller_interface::return_type::OK;
   }
 
-  auto wheel_command = swerveDriveKinematics_.compute_wheel_commands(
-    linear_x_cmd, linear_y_cmd, angular_cmd, params_.wheel_radius);
+  const bool is_stop = (std::fabs(linear_x_cmd) < EPS) && (std::fabs(linear_y_cmd) < EPS) &&
+                       (std::fabs(angular_cmd) < EPS);
 
+  const double dt = period.seconds();
+  const double alpha = dt / (params_.velocity_filter_tau_s + dt);
+
+  // Read actual steer feedback for gate decision.
   std::array<double, 4> current_steering_angles{};
   for (std::size_t i = 0; i < 4; ++i)
   {
-    if (axle_handles_[i].has_value())
+    current_steering_angles[i] =
+      axle_handles_[i].has_value() ? axle_handles_[i]->get_feedback() : previous_steering_angles_[i];
+  }
+
+  // Gate: compare actual feedback vs last commanded target.
+  // Fires when any steer is still traveling to its target — suppresses drive
+  // so wheels don't push sideways during steer travel.
+  bool any_unsettled = false;
+  for (std::size_t i = 0; i < 4; ++i)
+  {
+    if (std::abs(current_steering_angles[i] - previous_steering_angles_[i]) >
+        params_.steering_settled_threshold_rad)
     {
-      current_steering_angles[i] = axle_handles_[i]->get_feedback();
-    }
-    else
-    {
-      current_steering_angles[i] = previous_steering_angles_[i];
+      any_unsettled = true;
+      break;
     }
   }
 
-  // Use previous *commanded* angles (not actual feedback) for the flip decision.
-  // The flip optimization computes travel_direct vs travel_flipped as absolute
-  // differences against the reference angle.  Using actual feedback causes a
-  // near-tie to oscillate every cycle when the motor is mid-trajectory: the
-  // tiny position noise each cycle tips the balance back and forth, producing
-  // ±π command swings that send the Kinco drive into runaway.
-  // previous_steering_angles_ is stable (updated from the command output, not
-  // the encoder) so the flip decision is deterministic and consistent.
+  // Steer gets raw cmd_vel so wheels track the intended direction even during gate.
+  // Use previous *commanded* angles (not actual feedback) for the flip decision:
+  // actual feedback mid-trajectory causes near-ties to oscillate every cycle,
+  // producing ±π command swings. previous_steering_angles_ is stable.
+  auto wheel_command = swerveDriveKinematics_.compute_wheel_commands(
+    linear_x_cmd, linear_y_cmd, angular_cmd, params_.wheel_radius);
+
   wheel_command = swerveDriveKinematics_.optimize_wheel_commands(
     wheel_command, previous_steering_angles_, params_.steering_min_position,
     params_.steering_max_position);
 
-  std::vector<std::tuple<WheelCommand &, double, std::string>> wheel_data = {
-    {wheel_command[0], params_.front_left_velocity_threshold / params_.wheel_radius,
-     "front_left_wheel"},
-    {wheel_command[1], params_.front_right_velocity_threshold / params_.wheel_radius,
-     "front_right_wheel"},
-    {wheel_command[2], params_.rear_left_velocity_threshold / params_.wheel_radius,
-     "rear_left_wheel"},
-    {wheel_command[3], params_.rear_right_velocity_threshold / params_.wheel_radius,
-     "rear_right_wheel"}};
-
-  for (const auto & [wheel_command_, threshold, label] : wheel_data)
+  // Drive gets gated post-optimize: zero drive while any steer is unsettled.
+  // EMA downstream smooths gate-open and gate-close transitions.
+  if (any_unsettled)
   {
-    if (wheel_command_.drive_velocity > threshold)
+    for (std::size_t i = 0; i < 4; ++i)
     {
-      wheel_command_.drive_velocity = threshold;
+      wheel_command[i].drive_angular_velocity = 0.0;
+      wheel_command[i].drive_velocity = 0.0;
     }
   }
 
-  const double min_steering_error = M_PI / 6.0;  // 30 degrees
-  for (std::size_t i = 0; i < 4; i++)
-  {
-    double steering_error = std::abs(
-      angles::shortest_angular_distance(
-        current_steering_angles[i], wheel_command[i].steering_angle));
+  const std::array<double, 4> thresholds = {{
+    params_.front_left_velocity_threshold  / params_.wheel_radius,
+    params_.front_right_velocity_threshold / params_.wheel_radius,
+    params_.rear_left_velocity_threshold   / params_.wheel_radius,
+    params_.rear_right_velocity_threshold  / params_.wheel_radius
+  }};
 
-    double velocity_scale = 1.0;
-    if (steering_error > min_steering_error)
-    {
-      if (steering_error >= 1.5608)  // ~89.5 degrees
-      {
-        // cos(1.5608) = 0.01
-        velocity_scale = 0.01 / std::cos(min_steering_error);
-      }
-      else
-      {
-        // Scale velocity based on steering error using cosine function
-        velocity_scale = std::cos(steering_error) / std::cos(min_steering_error);
-      }
-    }
-
-    // Apply velocity scaling
-    wheel_command[i].drive_velocity *= velocity_scale;
-    wheel_command[i].drive_angular_velocity *= velocity_scale;
-  }
-
-  for (std::size_t i = 0; i < 4; i++)
+  for (std::size_t i = 0; i < 4; ++i)
   {
     if (!axle_handles_[i].has_value() || !wheel_handles_[i].has_value())
     {
@@ -473,8 +474,15 @@ controller_interface::return_type SwerveController::update_and_write_commands(
         wheel_joint_names[i]);
     }
 
-    const bool is_stop = (std::fabs(linear_x_cmd) < EPS) && (std::fabs(linear_y_cmd) < EPS) &&
-                         (std::fabs(angular_cmd) < EPS);
+    // Cap (both directions) → gate → EMA, all in one pass.
+    // Cap bounds what EMA can track; gate zeroes drive during steer travel;
+    // EMA smooths ramp-up, ramp-down, and optimizer sign-flip events.
+    double target = any_unsettled ? 0.0 :
+      std::clamp(wheel_command[i].drive_angular_velocity, -thresholds[i], thresholds[i]);
+
+    filtered_drive_[i] += alpha * (target - filtered_drive_[i]);
+    wheel_command[i].drive_angular_velocity = filtered_drive_[i];
+    wheel_command[i].drive_velocity = filtered_drive_[i] * params_.wheel_radius;
 
     if (is_stop)
     {
@@ -488,7 +496,7 @@ controller_interface::return_type SwerveController::update_and_write_commands(
     wheel_handles_[i]->set_velocity(wheel_command[i].drive_angular_velocity);
   }
 
-  const auto update_dt = time - previous_update_timestamp_;
+  const auto & update_dt = period;
   previous_update_timestamp_ = time;
 
   std::array<double, 4> velocity_array{};
