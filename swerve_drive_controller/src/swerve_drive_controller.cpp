@@ -435,29 +435,29 @@ controller_interface::return_type SwerveController::update_and_write_commands(
     }
   }
 
-  const double min_steering_error = M_PI / 6.0;  // 30 degrees
+  // Gate wheel rolling on module alignment: rolling while misaligned turns a
+  // commanded translation into an arc (sin(error) of the motion is parasitic).
+  // Full speed only once the module is settled (<= 5 deg); linear ramp to zero
+  // by 15 deg. The previous scale was normalized to 1.0 at 30 deg error, so the
+  // base rolled at FULL speed with up to 30 deg of module misalignment.
+  // (A hard settle-gate starves motion under a continuously re-steering
+  // upstream controller — modules chase moving targets and never settle.)
+  // Uniform gate: per-wheel scaling distorts the twist (four different scales
+  // are not a rigid-body motion — wheels fight, and the imbalance torques the
+  // base: measured ~30 deg yaw drift over a 3 m crab). Gate on the WORST
+  // module and scale every wheel identically, so the commanded twist direction
+  // is preserved exactly and the base just slows while modules align.
+  double velocity_scale = 1.0;
   for (std::size_t i = 0; i < 4; i++)
   {
     double steering_error = std::abs(
       angles::shortest_angular_distance(
         current_steering_angles[i], wheel_command[i].steering_angle));
-
-    double velocity_scale = 1.0;
-    if (steering_error > min_steering_error)
-    {
-      if (steering_error >= 1.5608)  // ~89.5 degrees
-      {
-        // cos(1.5608) = 0.01
-        velocity_scale = 0.01 / std::cos(min_steering_error);
-      }
-      else
-      {
-        // Scale velocity based on steering error using cosine function
-        velocity_scale = std::cos(steering_error) / std::cos(min_steering_error);
-      }
-    }
-
-    // Apply velocity scaling
+    const double c = std::max(0.0, std::cos(steering_error));
+    velocity_scale = std::min(velocity_scale, c * c * c * c * c);
+  }
+  for (std::size_t i = 0; i < 4; i++)
+  {
     wheel_command[i].drive_velocity *= velocity_scale;
     wheel_command[i].drive_angular_velocity *= velocity_scale;
   }
